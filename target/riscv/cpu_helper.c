@@ -872,8 +872,12 @@ static int get_physical_address(CPURISCVState *env, hwaddr *physical,
     }
     masked_msbs = (addr >> (va_bits - 1)) & mask;
 
-    if (masked_msbs != 0 && masked_msbs != mask) {
-        return TRANSLATE_FAIL;
+    if (vm == VM_1_10_SV32) {
+        if (masked_msbs != 0 && masked_msbs != mask && masked_msbs != 1)
+            return TRANSLATE_FAIL;
+    } else {
+        if (masked_msbs != 0 && masked_msbs != mask)
+            return TRANSLATE_FAIL;
     }
 
     int ptshift = (levels - 1) * ptidxbits;
