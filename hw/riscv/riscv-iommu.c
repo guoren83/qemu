@@ -884,6 +884,7 @@ static int riscv_iommu_ctx_fetch(RISCVIOMMUState *s, RISCVIOMMUContext *ctx)
     const size_t dc_len = sizeof(dc) >> dc_fmt;
     int depth;
     uint64_t de;
+    bool gipc = false;
 
     switch (mode) {
     case RISCV_IOMMU_DDTP_MODE_OFF:
@@ -1029,6 +1030,10 @@ static int riscv_iommu_ctx_fetch(RISCVIOMMUState *s, RISCVIOMMUContext *ctx)
         return RISCV_IOMMU_FQ_CAUSE_PDT_MISCONFIGURED;
     }
 
+    if ((ctx->tc & RISCV_IOMMU_DC_TC_XT_GIPC) && (s->cap & RISCV_IOMMU_CAP_XT_GIPC)) {
+        gipc = true;
+    }
+
     for (depth = mode - RISCV_IOMMU_DC_FSC_PDTP_MODE_PD8; depth-- > 0; ) {
         riscv_iommu_hpm_incr_ctr(s, ctx, RISCV_IOMMU_HPMEVENT_PD_WALK);
 
@@ -1037,6 +1042,7 @@ static int riscv_iommu_ctx_fetch(RISCVIOMMUState *s, RISCVIOMMUContext *ctx)
          * level. See IOMMU Specification, 2.2. Process-Directory-Table.
          */
         const int split = depth * 9 + 8;
+        const int split = depth * 9 + (gipc ? 7 : 8);
         addr |= ((ctx->process_id >> split) << 3) & ~TARGET_PAGE_MASK;
         if (dma_memory_read(s->target_as, addr, &de, sizeof(de),
                             MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
@@ -1052,8 +1058,9 @@ static int riscv_iommu_ctx_fetch(RISCVIOMMUState *s, RISCVIOMMUContext *ctx)
     riscv_iommu_hpm_incr_ctr(s, ctx, RISCV_IOMMU_HPMEVENT_PD_WALK);
 
     /* Leaf entry in PDT */
-    addr |= (ctx->process_id << 4) & ~TARGET_PAGE_MASK;
-    if (dma_memory_read(s->target_as, addr, &dc.ta, sizeof(uint64_t) * 2,
+    addr |= (ctx->process_id << (gipc ? 5 : 4)) & ~TARGET_PAGE_MASK;
+    if (dma_memory_read(s->target_as, addr, &dc.ta,
+                        gipc ? sizeof(uint64_t) * 4 : sizeof(uint64_t) * 2,
                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
         return RISCV_IOMMU_FQ_CAUSE_PDT_LOAD_FAULT;
     }
@@ -1061,6 +1068,9 @@ static int riscv_iommu_ctx_fetch(RISCVIOMMUState *s, RISCVIOMMUContext *ctx)
     /* Use FSC and TA from process directory entry. */
     ctx->ta = le64_to_cpu(dc.ta);
     ctx->satp = le64_to_cpu(dc.fsc);
+    if (gipc) {
+        ctx->gatp = le64_to_cpu(dc.msiptp);
+    }
 
     if (!(ctx->ta & RISCV_IOMMU_PC_TA_V)) {
         return RISCV_IOMMU_FQ_CAUSE_PDT_INVALID;
@@ -2354,6 +2364,9 @@ static void riscv_iommu_realize(DeviceState *dev, Error **errp)
                   RISCV_IOMMU_CAP_SV48X4 | RISCV_IOMMU_CAP_SV57X4 |
                   RISCV_IOMMU_CAP_SVRSW60T59B;
     }
+    if (s->enable_xt_gipc) {
+        s->cap |= RISCV_IOMMU_CAP_XT_GIPC;
+    }
 
     if (s->hpm_cntrs > 0) {
         /* Clip number of HPM counters to maximum supported (31). */
@@ -2501,6 +2514,7 @@ static const Property riscv_iommu_properties[] = {
         LIMIT_CACHE_IOT),
     DEFINE_PROP_BOOL("intremap", RISCVIOMMUState, enable_msi, TRUE),
     DEFINE_PROP_BOOL("ats", RISCVIOMMUState, enable_ats, TRUE),
+    DEFINE_PROP_BOOL("xuantie-gipc", RISCVIOMMUState, enable_xt_gipc, TRUE),
     DEFINE_PROP_BOOL("off", RISCVIOMMUState, enable_off, TRUE),
     DEFINE_PROP_BOOL("s-stage", RISCVIOMMUState, enable_s_stage, TRUE),
     DEFINE_PROP_BOOL("g-stage", RISCVIOMMUState, enable_g_stage, TRUE),
